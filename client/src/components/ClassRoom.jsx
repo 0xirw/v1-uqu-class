@@ -108,7 +108,7 @@ function ClassRoom({ user }) {
 
     // Listen for screen sharing events
     newSocket.on('user-started-screen-share', ({ userId, userName, streamId }) => {
-      console.log('📺 User started screen sharing:', userName);
+      console.log('🎬 User started screen sharing:', userName);
       setActiveScreenSharer({ userId, userName });
       
       setMessages(prev => [...prev, {
@@ -119,12 +119,10 @@ function ClassRoom({ user }) {
         isSystem: true
       }]);
       
-      // If this is not the current user, wait a moment then request to view the screen
+      // If this is not the current user, request to view the screen immediately
       if (userId !== newSocket.id) {
-        console.log('🕰️ Waiting 1 second before requesting screen share to ensure sharer is ready');
-        setTimeout(() => {
-          requestScreenShare(userId, newSocket);
-        }, 1000);
+        console.log('🎬 Immediately requesting screen share from:', userName);
+        requestScreenShare(userId, newSocket);
       }
     });
 
@@ -433,191 +431,192 @@ function ClassRoom({ user }) {
     alert(message);
   };
 
-  // WebRTC Configuration
+  // WebRTC Configuration with more STUN servers for better connectivity
   const rtcConfig = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' }
-    ]
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' }
+    ],
+    iceCandidatePoolSize: 10
   };
 
-  // Request to view someone's screen share
+  // Request to view someone's screen share - SIMPLIFIED APPROACH
   const requestScreenShare = async (userId, socket) => {
     try {
-      console.log('📡 Requesting screen share from:', userId);
+      console.log('🎬 Starting simplified screen share request to:', userId);
       
-      const peerConnection = new RTCPeerConnection(rtcConfig);
+      // Create a new peer connection
+      const pc = new RTCPeerConnection(rtcConfig);
       
-      // Handle incoming stream
-      peerConnection.ontrack = (event) => {
-        console.log('📺 Received remote screen stream');
-        console.log('📺 Stream details:', {
-          streamId: event.streams[0].id,
-          trackCount: event.streams[0].getTracks().length,
-          videoTracks: event.streams[0].getVideoTracks().length,
-          audioTracks: event.streams[0].getAudioTracks().length
-        });
+      // Set up to receive video
+      pc.ontrack = (event) => {
+        console.log('🎥 RECEIVED TRACK:', event.track.kind, 'Stream ID:', event.streams[0].id);
+        console.log('🎥 Track state:', event.track.readyState, 'enabled:', event.track.enabled);
         
-        const stream = event.streams[0];
+        const remoteStream = event.streams[0];
+        console.log('🎥 Remote stream tracks:', remoteStream.getTracks().length);
+        
         if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = stream;
+          console.log('🎥 Setting srcObject on video element');
+          remoteVideoRef.current.srcObject = remoteStream;
           
-          // Ensure video plays
-          remoteVideoRef.current.play().catch(error => {
-            console.log('📺 Auto-play prevented, will play on user interaction:', error);
+          // Force play
+          remoteVideoRef.current.play().then(() => {
+            console.log('✅ Video playing successfully');
+          }).catch(err => {
+            console.log('⚠️ Autoplay blocked, but video is ready:', err.message);
           });
         }
-        
-        // Store the remote stream
-        setRemoteScreenStreams(prev => ({ ...prev, [userId]: stream }));
+      };
+      
+      // Handle connection state changes
+      pc.onconnectionstatechange = () => {
+        console.log('🔗 Connection state:', pc.connectionState);
+      };
+      
+      pc.oniceconnectionstatechange = () => {
+        console.log('🧊 ICE state:', pc.iceConnectionState);
       };
       
       // Handle ICE candidates
-      peerConnection.onicecandidate = (event) => {
+      pc.onicecandidate = (event) => {
         if (event.candidate) {
-          console.log('🧊 Sending ICE candidate to sharer');
+          console.log('🧊 Sending ICE candidate');
           socket.emit('screen-share-ice-candidate', {
-            roomId: roomId,
+            roomId,
             targetUserId: userId,
             candidate: event.candidate
           });
+        } else {
+          console.log('🧊 ICE gathering complete');
         }
       };
       
-      // Monitor connection state
-      peerConnection.onconnectionstatechange = () => {
-        console.log('🔗 Peer connection state (viewer):', peerConnection.connectionState);
-        if (peerConnection.connectionState === 'failed') {
-          console.error('❌ Peer connection failed, attempting restart');
-          // Could implement ICE restart here
-        }
-      };
+      // Store the peer connection
+      setPeerConnections(prev => ({ ...prev, [userId]: pc }));
       
-      peerConnection.oniceconnectionstatechange = () => {
-        console.log('🧊 ICE connection state (viewer):', peerConnection.iceConnectionState);
-      };
-      
-      // Store peer connection
-      setPeerConnections(prev => ({ ...prev, [userId]: peerConnection }));
-      
-      // Create offer
-      const offer = await peerConnection.createOffer({
+      // Create offer with specific constraints
+      const offer = await pc.createOffer({
         offerToReceiveVideo: true,
         offerToReceiveAudio: true
       });
-      await peerConnection.setLocalDescription(offer);
       
-      console.log('📡 Sending offer to screen sharer');
-      // Send offer to screen sharer
+      console.log('📤 Setting local description and sending offer');
+      await pc.setLocalDescription(offer);
+      
       socket.emit('screen-share-offer', {
-        roomId: roomId,
+        roomId,
         targetUserId: userId,
-        offer: offer
+        offer
       });
+      
     } catch (error) {
-      console.error('❌ Error requesting screen share:', error);
+      console.error('❌ Error in requestScreenShare:', error);
     }
   };
 
-  // Handle screen share offer (for the person sharing)
+  // Handle screen share offer (for the person sharing) - SIMPLIFIED APPROACH
   const handleScreenShareOffer = async (fromUserId, offer, socket) => {
     try {
-      console.log('📡 Handling screen share offer from:', fromUserId);
-      console.log('📺 Current screen stream:', screenStream);
+      console.log('🎬 Handling offer from viewer:', fromUserId);
       
       if (!screenStream) {
-        console.error('❌ No screen stream available to share');
+        console.error('❌ No screen stream available!');
         return;
       }
       
-      const peerConnection = new RTCPeerConnection(rtcConfig);
+      console.log('🎥 Screen stream has', screenStream.getTracks().length, 'tracks');
+      screenStream.getTracks().forEach((track, i) => {
+        console.log(`Track ${i}:`, track.kind, track.enabled, track.readyState);
+      });
       
-      // Add screen stream tracks to peer connection BEFORE setting remote description
-      console.log('📺 Adding tracks from screen stream');
-      screenStream.getTracks().forEach((track, index) => {
-        console.log(`📺 Adding track ${index}:`, track.kind, track.enabled, track.readyState);
-        peerConnection.addTrack(track, screenStream);
+      // Create peer connection
+      const pc = new RTCPeerConnection(rtcConfig);
+      
+      // Add ALL tracks from screen stream
+      screenStream.getTracks().forEach((track) => {
+        console.log('🎥 Adding track to peer connection:', track.kind);
+        pc.addTrack(track, screenStream);
       });
       
       // Handle ICE candidates
-      peerConnection.onicecandidate = (event) => {
+      pc.onicecandidate = (event) => {
         if (event.candidate) {
           console.log('🧊 Sending ICE candidate to viewer');
           socket.emit('screen-share-ice-candidate', {
-            roomId: roomId,
+            roomId,
             targetUserId: fromUserId,
             candidate: event.candidate
           });
         }
       };
       
-      // Monitor connection state
-      peerConnection.onconnectionstatechange = () => {
-        console.log('🔗 Peer connection state:', peerConnection.connectionState);
-      };
-      
-      peerConnection.oniceconnectionstatechange = () => {
-        console.log('🧊 ICE connection state:', peerConnection.iceConnectionState);
+      // Monitor connection
+      pc.onconnectionstatechange = () => {
+        console.log('🔗 Sharer connection state:', pc.connectionState);
       };
       
       // Store peer connection
-      setPeerConnections(prev => ({ ...prev, [fromUserId]: peerConnection }));
+      setPeerConnections(prev => ({ ...prev, [fromUserId]: pc }));
       
-      // Set remote description and create answer
-      await peerConnection.setRemoteDescription(offer);
-      const answer = await peerConnection.createAnswer();
-      await peerConnection.setLocalDescription(answer);
+      // Set remote description (the offer)
+      console.log('📥 Setting remote description');
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
       
-      console.log('📡 Sending answer back to viewer');
+      // Create answer
+      console.log('📤 Creating answer');
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      
       // Send answer back
+      console.log('📤 Sending answer to viewer');
       socket.emit('screen-share-answer', {
-        roomId: roomId,
+        roomId,
         targetUserId: fromUserId,
-        answer: answer
+        answer
       });
+      
     } catch (error) {
       console.error('❌ Error handling screen share offer:', error);
     }
   };
 
-  // Handle screen share answer (for the person viewing)
+  // Handle screen share answer (for the person viewing) - SIMPLIFIED
   const handleScreenShareAnswer = async (fromUserId, answer) => {
     try {
-      console.log('📡 Handling screen share answer from:', fromUserId);
+      console.log('🎬 Handling answer from sharer:', fromUserId);
       
-      const peerConnection = peerConnections[fromUserId];
-      if (peerConnection) {
-        await peerConnection.setRemoteDescription(answer);
-        console.log('✅ Remote description set successfully');
-        
-        // Check if we're receiving video
-        setTimeout(() => {
-          if (remoteVideoRef.current && remoteVideoRef.current.videoWidth === 0) {
-            console.log('⚠️ No video detected after 3 seconds, connection may have issues');
-          }
-        }, 3000);
-      } else {
-        console.error('❌ No peer connection found for user:', fromUserId);
+      const pc = peerConnections[fromUserId];
+      if (!pc) {
+        console.error('❌ No peer connection found for:', fromUserId);
+        return;
       }
+      
+      console.log('📥 Setting remote description (answer)');
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      console.log('✅ Answer processed successfully');
+      
     } catch (error) {
-      console.error('❌ Error handling screen share answer:', error);
+      console.error('❌ Error handling answer:', error);
     }
   };
 
-  // Handle ICE candidates
+  // Handle ICE candidates - SIMPLIFIED
   const handleIceCandidate = async (fromUserId, candidate) => {
     try {
-      console.log('🧊 Handling ICE candidate from:', fromUserId);
-      const peerConnection = peerConnections[fromUserId];
-      if (peerConnection && peerConnection.remoteDescription) {
-        await peerConnection.addIceCandidate(candidate);
-        console.log('✅ ICE candidate added successfully');
+      console.log('🧊 Adding ICE candidate from:', fromUserId);
+      const pc = peerConnections[fromUserId];
+      if (pc && pc.remoteDescription) {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        console.log('✅ ICE candidate added');
       } else {
-        console.log('⚠️ Peer connection not ready for ICE candidate, queuing...');
-        // Could implement ICE candidate queuing here if needed
+        console.log('⚠️ Peer connection not ready for ICE candidate');
       }
     } catch (error) {
-      console.error('❌ Error handling ICE candidate:', error);
+      console.error('❌ Error adding ICE candidate:', error);
     }
   };
 

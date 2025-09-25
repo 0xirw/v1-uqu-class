@@ -28,10 +28,21 @@ function ClassRoom({ user }) {
   const [remoteScreenStreams, setRemoteScreenStreams] = useState({});
   const [activeTab, setActiveTab] = useState('chat');
   const [showUserList, setShowUserList] = useState(false);
+  const [screenShareSupported, setScreenShareSupported] = useState(false);
   
   const fileInputRef = useRef();
   const videoRef = useRef();
   const messagesEndRef = useRef();
+
+  // Check screen share support on component mount
+  useEffect(() => {
+    const isSupported = navigator.mediaDevices && 
+      navigator.mediaDevices.getDisplayMedia && 
+      (window.isSecureContext || 
+       location.hostname === 'localhost' || 
+       location.hostname === '127.0.0.1');
+    setScreenShareSupported(isSupported);
+  }, []);
 
   useEffect(() => {
     if (!user) {
@@ -175,15 +186,147 @@ function ClassRoom({ user }) {
   };
 
   const startScreenShare = async () => {
+    console.log('🎬 Starting screen share process...');
+    console.log('🔍 Current location:', window.location.href);
+    console.log('🔒 Secure context:', window.isSecureContext);
+    console.log('🌐 Protocol:', window.location.protocol);
+    console.log('🏠 Hostname:', window.location.hostname);
+    
     try {
+      // Check if running on HTTPS or localhost
+      const isSecureContext = window.isSecureContext || 
+        location.hostname === 'localhost' || 
+        location.hostname === '127.0.0.1';
+      
+      console.log('✅ Is secure context:', isSecureContext);
+      
+      if (!isSecureContext) {
+        const message = 'Screen sharing requires HTTPS. Please access the site via HTTPS or use localhost for testing.';
+        console.error('❌ Security error:', message);
+        alert(message);
+        return;
+      }
+
+      // Check if getDisplayMedia is supported
+      console.log('🔍 Checking browser support...');
+      console.log('📱 navigator.mediaDevices:', !!navigator.mediaDevices);
+      console.log('🖥️ getDisplayMedia:', !!navigator.mediaDevices?.getDisplayMedia);
+      
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+        const message = 'Screen sharing is not supported in this browser. Please use Chrome, Firefox, or Edge.';
+        console.error('❌ Browser support error:', message);
+        alert(message);
+        return;
+      }
+
+      console.log('🚀 Requesting screen share permission...');
+      
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: true
+        video: {
+          mediaSource: 'screen',
+          width: { max: 1920 },
+          height: { max: 1080 },
+          frameRate: { max: 30 }
+        },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          sampleRate: 44100
+        }
+      });
+
+      console.log('✅ Screen share permission granted!');
+      console.log('📺 Stream info:', {
+        id: stream.id,
+        videoTracks: stream.getVideoTracks().length,
+        audioTracks: stream.getAudioTracks().length
       });
 
       setScreenStream(stream);
       setIsScreenSharing(true);
-      videoRef.current.srcObject = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        console.log('📺 Video element updated with stream');
+      }
+
+      socket.emit('start-screen-share', {
+        roomId: roomId,
+        streamId: stream.id
+      });
+      console.log('📡 Screen share event sent to server');
+
+      // Handle stream end (user clicks "Stop sharing" in browser)
+      stream.getVideoTracks()[0].addEventListener('ended', () => {
+        console.log('📺 Video track ended');
+        stopScreenShare();
+      });
+      
+      // Add audio track ended listener if audio is included
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length > 0) {
+        audioTracks[0].addEventListener('ended', () => {
+          console.log('🔊 Audio track ended');
+          stopScreenShare();
+        });
+      }
+    } catch (error) {
+      console.error('❌ Screen share error details:', {
+        name: error.name,
+        message: error.message,
+        stack: error.stack
+      });
+      
+      let errorMessage = 'Could not start screen sharing. ';
+      
+      if (error.name === 'NotAllowedError') {
+        errorMessage = '🚫 Permission denied! Please click "Allow" when your browser asks to share your screen. You might need to:';
+        errorMessage += '\n\n1. 🔄 Refresh the page and try again';
+        errorMessage += '\n2. 🔒 Check if you blocked permissions in browser settings';
+        errorMessage += '\n3. 🖥️ Make sure no other app is using screen capture';
+        errorMessage += '\n4. 🌐 Try a different browser (Chrome recommended)';
+      } else if (error.name === 'NotFoundError') {
+        errorMessage = '🔍 No screen capture source available. Please ensure:';
+        errorMessage += '\n\n1. 📺 You have a display connected';
+        errorMessage += '\n2. 🖱️ Click the correct screen/window when prompted';
+        errorMessage += '\n3. 🔄 Try again';
+      } else if (error.name === 'NotSupportedError') {
+        errorMessage = '❌ Screen sharing is not supported in this browser. Please use Chrome, Firefox, or Edge.';
+      } else if (error.name === 'NotReadableError') {
+        errorMessage = '🔒 Screen capture source is already in use by another application. Please:';
+        errorMessage += '\n\n1. 📱 Close other video conferencing apps';
+        errorMessage += '\n2. 🖥️ Close other screen recording software';
+        errorMessage += '\n3. 🔄 Try again';
+      } else if (error.name === 'OverconstrainedError') {
+        errorMessage = '⚙️ Screen capture settings are not supported. This is usually a browser issue.';
+      } else if (error.name === 'AbortError') {
+        errorMessage = '✋ Screen sharing was cancelled. Click "Share Screen" to try again.';
+      } else {
+        errorMessage += `\n\nTechnical details: ${error.name} - ${error.message}`;
+        errorMessage += '\n\n🔧 Try these steps:';
+        errorMessage += '\n1. 🔄 Refresh the page';
+        errorMessage += '\n2. 🌐 Use Chrome browser';
+        errorMessage += '\n3. 🔒 Grant permissions when asked';
+        errorMessage += '\n4. 🖥️ Make sure localhost:5000 is trusted';
+      }
+      
+      alert(errorMessage);
+    }
+  };
+
+  const startSimpleScreenShare = async () => {
+    console.log('🛠️ Trying simple screen share...');
+    try {
+      // Simplest possible request - just video, no audio, minimal constraints
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true
+      });
+
+      console.log('✅ Simple screen share worked!');
+      setScreenStream(stream);
+      setIsScreenSharing(true);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
 
       socket.emit('start-screen-share', {
         roomId: roomId,
@@ -195,9 +338,45 @@ function ClassRoom({ user }) {
         stopScreenShare();
       });
     } catch (error) {
-      console.error('Error starting screen share:', error);
-      alert('Could not start screen sharing. Please check your browser permissions.');
+      console.error('❌ Simple screen share also failed:', error);
+      alert(`Simple screen share failed too: ${error.name} - ${error.message}\n\nPlease check browser console for more details.`);
     }
+  };
+
+  const testBrowserSupport = () => {
+    const info = {
+      userAgent: navigator.userAgent,
+      location: window.location.href,
+      protocol: window.location.protocol,
+      hostname: window.location.hostname,
+      isSecureContext: window.isSecureContext,
+      hasMediaDevices: !!navigator.mediaDevices,
+      hasGetDisplayMedia: !!navigator.mediaDevices?.getDisplayMedia,
+      permissions: navigator.permissions ? 'Available' : 'Not available'
+    };
+    
+    console.log('🔍 Browser Support Test:', info);
+    
+    let message = '🔍 Browser Support Information:\n\n';
+    message += `Browser: ${navigator.userAgent.split(' ')[0]}\n`;
+    message += `URL: ${window.location.href}\n`;
+    message += `Protocol: ${window.location.protocol}\n`;
+    message += `Secure Context: ${window.isSecureContext}\n`;
+    message += `Media Devices: ${!!navigator.mediaDevices}\n`;
+    message += `Screen Share API: ${!!navigator.mediaDevices?.getDisplayMedia}\n`;
+    message += `Permissions API: ${navigator.permissions ? 'Available' : 'Not available'}\n\n`;
+    
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      message += '❌ Screen sharing is not supported in this browser!\n';
+      message += 'Try using Chrome, Firefox, or Edge.';
+    } else if (!window.isSecureContext && window.location.hostname !== 'localhost') {
+      message += '⚠️ Screen sharing requires HTTPS!\n';
+      message += 'Deploy to a cloud platform or use localhost.';
+    } else {
+      message += '✅ Your browser should support screen sharing!';
+    }
+    
+    alert(message);
   };
 
   const stopScreenShare = () => {
@@ -287,10 +466,46 @@ function ClassRoom({ user }) {
               <Monitor size={48} />
               <h3>No screen sharing active</h3>
               <p>Start sharing your screen to show content to others</p>
-              <button onClick={startScreenShare} className="start-share-btn">
-                <Monitor size={20} />
-                Share Screen
-              </button>
+              
+              {!screenShareSupported && (
+                <div className="requirements-info">
+                  <h4>Screen Sharing Requirements:</h4>
+                  <ul>
+                    <li>✅ Use Chrome, Firefox, or Edge browser</li>
+                    <li>✅ Access via HTTPS or localhost</li>
+                    <li>✅ Grant permission when prompted</li>
+                    <li>✅ Ensure no other app is capturing screen</li>
+                  </ul>
+                </div>
+              )}
+              
+              {screenShareSupported ? (
+                <div className="screen-share-controls">
+                  <button onClick={startScreenShare} className="start-share-btn">
+                    <Monitor size={20} />
+                    Share Screen
+                  </button>
+                  <button onClick={startSimpleScreenShare} className="start-share-btn-simple">
+                    <Monitor size={20} />
+                    Simple Share (Fallback)
+                  </button>
+                  <button onClick={testBrowserSupport} className="test-button">
+                    🔍 Test Browser Support
+                  </button>
+                </div>
+              ) : (
+                <div className="screen-share-unsupported">
+                  <button disabled className="start-share-btn disabled">
+                    <Monitor size={20} />
+                    Screen Share Unavailable
+                  </button>
+                  <p className="support-message">
+                    {!window.isSecureContext && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1' 
+                      ? 'Screen sharing requires HTTPS connection'
+                      : 'Screen sharing not supported in this browser'}
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </div>

@@ -119,9 +119,12 @@ function ClassRoom({ user }) {
         isSystem: true
       }]);
       
-      // If this is not the current user, request to view the screen
+      // If this is not the current user, wait a moment then request to view the screen
       if (userId !== newSocket.id) {
-        requestScreenShare(userId, newSocket);
+        console.log('🕰️ Waiting 1 second before requesting screen share to ensure sharer is ready');
+        setTimeout(() => {
+          requestScreenShare(userId, newSocket);
+        }, 1000);
       }
     });
 
@@ -448,14 +451,31 @@ function ClassRoom({ user }) {
       // Handle incoming stream
       peerConnection.ontrack = (event) => {
         console.log('📺 Received remote screen stream');
+        console.log('📺 Stream details:', {
+          streamId: event.streams[0].id,
+          trackCount: event.streams[0].getTracks().length,
+          videoTracks: event.streams[0].getVideoTracks().length,
+          audioTracks: event.streams[0].getAudioTracks().length
+        });
+        
+        const stream = event.streams[0];
         if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = event.streams[0];
+          remoteVideoRef.current.srcObject = stream;
+          
+          // Ensure video plays
+          remoteVideoRef.current.play().catch(error => {
+            console.log('📺 Auto-play prevented, will play on user interaction:', error);
+          });
         }
+        
+        // Store the remote stream
+        setRemoteScreenStreams(prev => ({ ...prev, [userId]: stream }));
       };
       
       // Handle ICE candidates
       peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
+          console.log('🧊 Sending ICE candidate to sharer');
           socket.emit('screen-share-ice-candidate', {
             roomId: roomId,
             targetUserId: userId,
@@ -464,13 +484,30 @@ function ClassRoom({ user }) {
         }
       };
       
+      // Monitor connection state
+      peerConnection.onconnectionstatechange = () => {
+        console.log('🔗 Peer connection state (viewer):', peerConnection.connectionState);
+        if (peerConnection.connectionState === 'failed') {
+          console.error('❌ Peer connection failed, attempting restart');
+          // Could implement ICE restart here
+        }
+      };
+      
+      peerConnection.oniceconnectionstatechange = () => {
+        console.log('🧊 ICE connection state (viewer):', peerConnection.iceConnectionState);
+      };
+      
       // Store peer connection
       setPeerConnections(prev => ({ ...prev, [userId]: peerConnection }));
       
       // Create offer
-      const offer = await peerConnection.createOffer();
+      const offer = await peerConnection.createOffer({
+        offerToReceiveVideo: true,
+        offerToReceiveAudio: true
+      });
       await peerConnection.setLocalDescription(offer);
       
+      console.log('📡 Sending offer to screen sharer');
       // Send offer to screen sharer
       socket.emit('screen-share-offer', {
         roomId: roomId,
@@ -486,25 +523,41 @@ function ClassRoom({ user }) {
   const handleScreenShareOffer = async (fromUserId, offer, socket) => {
     try {
       console.log('📡 Handling screen share offer from:', fromUserId);
+      console.log('📺 Current screen stream:', screenStream);
+      
+      if (!screenStream) {
+        console.error('❌ No screen stream available to share');
+        return;
+      }
       
       const peerConnection = new RTCPeerConnection(rtcConfig);
       
-      // Add screen stream to peer connection
-      if (screenStream) {
-        screenStream.getTracks().forEach(track => {
-          peerConnection.addTrack(track, screenStream);
-        });
-      }
+      // Add screen stream tracks to peer connection BEFORE setting remote description
+      console.log('📺 Adding tracks from screen stream');
+      screenStream.getTracks().forEach((track, index) => {
+        console.log(`📺 Adding track ${index}:`, track.kind, track.enabled, track.readyState);
+        peerConnection.addTrack(track, screenStream);
+      });
       
       // Handle ICE candidates
       peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
+          console.log('🧊 Sending ICE candidate to viewer');
           socket.emit('screen-share-ice-candidate', {
             roomId: roomId,
             targetUserId: fromUserId,
             candidate: event.candidate
           });
         }
+      };
+      
+      // Monitor connection state
+      peerConnection.onconnectionstatechange = () => {
+        console.log('🔗 Peer connection state:', peerConnection.connectionState);
+      };
+      
+      peerConnection.oniceconnectionstatechange = () => {
+        console.log('🧊 ICE connection state:', peerConnection.iceConnectionState);
       };
       
       // Store peer connection
@@ -515,6 +568,7 @@ function ClassRoom({ user }) {
       const answer = await peerConnection.createAnswer();
       await peerConnection.setLocalDescription(answer);
       
+      console.log('📡 Sending answer back to viewer');
       // Send answer back
       socket.emit('screen-share-answer', {
         roomId: roomId,
@@ -534,6 +588,16 @@ function ClassRoom({ user }) {
       const peerConnection = peerConnections[fromUserId];
       if (peerConnection) {
         await peerConnection.setRemoteDescription(answer);
+        console.log('✅ Remote description set successfully');
+        
+        // Check if we're receiving video
+        setTimeout(() => {
+          if (remoteVideoRef.current && remoteVideoRef.current.videoWidth === 0) {
+            console.log('⚠️ No video detected after 3 seconds, connection may have issues');
+          }
+        }, 3000);
+      } else {
+        console.error('❌ No peer connection found for user:', fromUserId);
       }
     } catch (error) {
       console.error('❌ Error handling screen share answer:', error);
@@ -543,9 +607,14 @@ function ClassRoom({ user }) {
   // Handle ICE candidates
   const handleIceCandidate = async (fromUserId, candidate) => {
     try {
+      console.log('🧊 Handling ICE candidate from:', fromUserId);
       const peerConnection = peerConnections[fromUserId];
-      if (peerConnection) {
+      if (peerConnection && peerConnection.remoteDescription) {
         await peerConnection.addIceCandidate(candidate);
+        console.log('✅ ICE candidate added successfully');
+      } else {
+        console.log('⚠️ Peer connection not ready for ICE candidate, queuing...');
+        // Could implement ICE candidate queuing here if needed
       }
     } catch (error) {
       console.error('❌ Error handling ICE candidate:', error);
@@ -644,8 +713,36 @@ function ClassRoom({ user }) {
             <div className="screen-share-viewer">
               <div className="screen-share-header">
                 <span>{activeScreenSharer.userName} is sharing their screen</span>
+                <button onClick={() => {
+                  if (remoteVideoRef.current) {
+                    console.log('🔍 Remote video element info:', {
+                      srcObject: !!remoteVideoRef.current.srcObject,
+                      readyState: remoteVideoRef.current.readyState,
+                      videoWidth: remoteVideoRef.current.videoWidth,
+                      videoHeight: remoteVideoRef.current.videoHeight,
+                      paused: remoteVideoRef.current.paused
+                    });
+                  }
+                }} className="test-button" style={{fontSize: '0.7rem', padding: '0.25rem 0.5rem'}}>
+                  🔍 Debug Video
+                </button>
               </div>
-              <video ref={remoteVideoRef} autoPlay className="screen-video" />
+              <video 
+                ref={remoteVideoRef} 
+                autoPlay 
+                playsInline
+                controls={false}
+                className="screen-video"
+                onLoadedMetadata={(e) => {
+                  console.log('📺 Video metadata loaded:', {
+                    videoWidth: e.target.videoWidth,
+                    videoHeight: e.target.videoHeight,
+                    duration: e.target.duration
+                  });
+                }}
+                onCanPlay={() => console.log('📺 Video can play')}
+                onError={(e) => console.error('❌ Video error:', e)}
+              />
             </div>
           ) : (
             <div className="screen-share-placeholder">

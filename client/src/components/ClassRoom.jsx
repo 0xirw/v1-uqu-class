@@ -26,12 +26,15 @@ function ClassRoom({ user }) {
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [screenStream, setScreenStream] = useState(null);
   const [remoteScreenStreams, setRemoteScreenStreams] = useState({});
+  const [peerConnections, setPeerConnections] = useState({});
+  const [activeScreenSharer, setActiveScreenSharer] = useState(null);
   const [activeTab, setActiveTab] = useState('chat');
   const [showUserList, setShowUserList] = useState(false);
   const [screenShareSupported, setScreenShareSupported] = useState(false);
   
   const fileInputRef = useRef();
   const videoRef = useRef();
+  const remoteVideoRef = useRef();
   const messagesEndRef = useRef();
 
   // Check screen share support on component mount
@@ -105,6 +108,9 @@ function ClassRoom({ user }) {
 
     // Listen for screen sharing events
     newSocket.on('user-started-screen-share', ({ userId, userName, streamId }) => {
+      console.log('📺 User started screen sharing:', userName);
+      setActiveScreenSharer({ userId, userName });
+      
       setMessages(prev => [...prev, {
         id: Date.now(),
         text: `${userName} started screen sharing`,
@@ -112,9 +118,32 @@ function ClassRoom({ user }) {
         timestamp: new Date(),
         isSystem: true
       }]);
+      
+      // If this is not the current user, request to view the screen
+      if (userId !== newSocket.id) {
+        requestScreenShare(userId, newSocket);
+      }
     });
 
     newSocket.on('user-stopped-screen-share', ({ userId, userName }) => {
+      console.log('📺 User stopped screen sharing:', userName);
+      setActiveScreenSharer(null);
+      
+      // Clean up peer connection
+      if (peerConnections[userId]) {
+        peerConnections[userId].close();
+        setPeerConnections(prev => {
+          const newPeers = { ...prev };
+          delete newPeers[userId];
+          return newPeers;
+        });
+      }
+      
+      // Clear remote video
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = null;
+      }
+      
       setMessages(prev => [...prev, {
         id: Date.now(),
         text: `${userName} stopped screen sharing`,
@@ -122,6 +151,22 @@ function ClassRoom({ user }) {
         timestamp: new Date(),
         isSystem: true
       }]);
+    });
+
+    // WebRTC signaling handlers
+    newSocket.on('screen-share-offer', async ({ fromUserId, fromUserName, offer }) => {
+      console.log('📡 Received screen share offer from:', fromUserName);
+      await handleScreenShareOffer(fromUserId, offer, newSocket);
+    });
+
+    newSocket.on('screen-share-answer', async ({ fromUserId, answer }) => {
+      console.log('📡 Received screen share answer from:', fromUserId);
+      await handleScreenShareAnswer(fromUserId, answer);
+    });
+
+    newSocket.on('screen-share-ice-candidate', async ({ fromUserId, candidate }) => {
+      console.log('📡 Received ICE candidate from:', fromUserId);
+      await handleIceCandidate(fromUserId, candidate);
     });
 
     // Listen for errors
@@ -254,6 +299,9 @@ function ClassRoom({ user }) {
         streamId: stream.id
       });
       console.log('📡 Screen share event sent to server');
+      
+      // Set as active screen sharer
+      setActiveScreenSharer({ userId: socket.id, userName: user.name });
 
       // Handle stream end (user clicks "Stop sharing" in browser)
       stream.getVideoTracks()[0].addEventListener('ended', () => {
@@ -332,6 +380,9 @@ function ClassRoom({ user }) {
         roomId: roomId,
         streamId: stream.id
       });
+      
+      // Set as active screen sharer
+      setActiveScreenSharer({ userId: socket.id, userName: user.name });
 
       // Handle stream end
       stream.getVideoTracks()[0].addEventListener('ended', () => {
@@ -379,15 +430,143 @@ function ClassRoom({ user }) {
     alert(message);
   };
 
+  // WebRTC Configuration
+  const rtcConfig = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' }
+    ]
+  };
+
+  // Request to view someone's screen share
+  const requestScreenShare = async (userId, socket) => {
+    try {
+      console.log('📡 Requesting screen share from:', userId);
+      
+      const peerConnection = new RTCPeerConnection(rtcConfig);
+      
+      // Handle incoming stream
+      peerConnection.ontrack = (event) => {
+        console.log('📺 Received remote screen stream');
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = event.streams[0];
+        }
+      };
+      
+      // Handle ICE candidates
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          socket.emit('screen-share-ice-candidate', {
+            roomId: roomId,
+            targetUserId: userId,
+            candidate: event.candidate
+          });
+        }
+      };
+      
+      // Store peer connection
+      setPeerConnections(prev => ({ ...prev, [userId]: peerConnection }));
+      
+      // Create offer
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      
+      // Send offer to screen sharer
+      socket.emit('screen-share-offer', {
+        roomId: roomId,
+        targetUserId: userId,
+        offer: offer
+      });
+    } catch (error) {
+      console.error('❌ Error requesting screen share:', error);
+    }
+  };
+
+  // Handle screen share offer (for the person sharing)
+  const handleScreenShareOffer = async (fromUserId, offer, socket) => {
+    try {
+      console.log('📡 Handling screen share offer from:', fromUserId);
+      
+      const peerConnection = new RTCPeerConnection(rtcConfig);
+      
+      // Add screen stream to peer connection
+      if (screenStream) {
+        screenStream.getTracks().forEach(track => {
+          peerConnection.addTrack(track, screenStream);
+        });
+      }
+      
+      // Handle ICE candidates
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          socket.emit('screen-share-ice-candidate', {
+            roomId: roomId,
+            targetUserId: fromUserId,
+            candidate: event.candidate
+          });
+        }
+      };
+      
+      // Store peer connection
+      setPeerConnections(prev => ({ ...prev, [fromUserId]: peerConnection }));
+      
+      // Set remote description and create answer
+      await peerConnection.setRemoteDescription(offer);
+      const answer = await peerConnection.createAnswer();
+      await peerConnection.setLocalDescription(answer);
+      
+      // Send answer back
+      socket.emit('screen-share-answer', {
+        roomId: roomId,
+        targetUserId: fromUserId,
+        answer: answer
+      });
+    } catch (error) {
+      console.error('❌ Error handling screen share offer:', error);
+    }
+  };
+
+  // Handle screen share answer (for the person viewing)
+  const handleScreenShareAnswer = async (fromUserId, answer) => {
+    try {
+      console.log('📡 Handling screen share answer from:', fromUserId);
+      
+      const peerConnection = peerConnections[fromUserId];
+      if (peerConnection) {
+        await peerConnection.setRemoteDescription(answer);
+      }
+    } catch (error) {
+      console.error('❌ Error handling screen share answer:', error);
+    }
+  };
+
+  // Handle ICE candidates
+  const handleIceCandidate = async (fromUserId, candidate) => {
+    try {
+      const peerConnection = peerConnections[fromUserId];
+      if (peerConnection) {
+        await peerConnection.addIceCandidate(candidate);
+      }
+    } catch (error) {
+      console.error('❌ Error handling ICE candidate:', error);
+    }
+  };
+
   const stopScreenShare = () => {
     if (screenStream) {
       screenStream.getTracks().forEach(track => track.stop());
     }
     setScreenStream(null);
     setIsScreenSharing(false);
+    setActiveScreenSharer(null);
+    
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
+    
+    // Close all peer connections
+    Object.values(peerConnections).forEach(pc => pc.close());
+    setPeerConnections({});
 
     socket.emit('stop-screen-share', {
       roomId: roomId
@@ -460,6 +639,13 @@ function ClassRoom({ user }) {
                 </button>
               </div>
               <video ref={videoRef} autoPlay muted className="screen-video" />
+            </div>
+          ) : activeScreenSharer ? (
+            <div className="screen-share-viewer">
+              <div className="screen-share-header">
+                <span>{activeScreenSharer.userName} is sharing their screen</span>
+              </div>
+              <video ref={remoteVideoRef} autoPlay className="screen-video" />
             </div>
           ) : (
             <div className="screen-share-placeholder">

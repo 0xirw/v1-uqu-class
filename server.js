@@ -136,6 +136,17 @@ io.on('connection', (socket) => {
 
   // Handle screen sharing
   socket.on('start-screen-share', ({ roomId, streamId }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    
+    // Store screen sharing info
+    room.screenShare = {
+      userId: socket.id,
+      userName: socket.userName,
+      streamId: streamId,
+      active: true
+    };
+    
     socket.to(roomId).emit('user-started-screen-share', {
       userId: socket.id,
       userName: socket.userName,
@@ -144,9 +155,40 @@ io.on('connection', (socket) => {
   });
 
   socket.on('stop-screen-share', ({ roomId }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    
+    // Clear screen sharing info
+    if (room.screenShare && room.screenShare.userId === socket.id) {
+      room.screenShare = null;
+    }
+    
     socket.to(roomId).emit('user-stopped-screen-share', {
       userId: socket.id,
       userName: socket.userName
+    });
+  });
+
+  // Handle WebRTC signaling for screen sharing
+  socket.on('screen-share-offer', ({ roomId, targetUserId, offer }) => {
+    socket.to(targetUserId).emit('screen-share-offer', {
+      fromUserId: socket.id,
+      fromUserName: socket.userName,
+      offer: offer
+    });
+  });
+
+  socket.on('screen-share-answer', ({ roomId, targetUserId, answer }) => {
+    socket.to(targetUserId).emit('screen-share-answer', {
+      fromUserId: socket.id,
+      answer: answer
+    });
+  });
+
+  socket.on('screen-share-ice-candidate', ({ roomId, targetUserId, candidate }) => {
+    socket.to(targetUserId).emit('screen-share-ice-candidate', {
+      fromUserId: socket.id,
+      candidate: candidate
     });
   });
 

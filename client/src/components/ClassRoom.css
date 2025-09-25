@@ -102,6 +102,22 @@
   flex-direction: column;
 }
 
+.screen-share-viewer {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.screen-share-viewer .screen-share-header {
+  background: #059669;
+  color: white;
+  padding: 1rem;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-weight: 500;
+}
+
 .screen-share-header {
   background: #1f2937;
   color: white;

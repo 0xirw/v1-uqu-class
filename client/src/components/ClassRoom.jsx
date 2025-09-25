@@ -712,35 +712,75 @@ function ClassRoom({ user }) {
             <div className="screen-share-viewer">
               <div className="screen-share-header">
                 <span>{activeScreenSharer.userName} is sharing their screen</span>
-                <button onClick={() => {
-                  if (remoteVideoRef.current) {
-                    console.log('🔍 Remote video element info:', {
-                      srcObject: !!remoteVideoRef.current.srcObject,
-                      readyState: remoteVideoRef.current.readyState,
-                      videoWidth: remoteVideoRef.current.videoWidth,
-                      videoHeight: remoteVideoRef.current.videoHeight,
-                      paused: remoteVideoRef.current.paused
-                    });
-                  }
-                }} className="test-button" style={{fontSize: '0.7rem', padding: '0.25rem 0.5rem'}}>
-                  🔍 Debug Video
-                </button>
+                <div className="viewer-controls">
+                  <button onClick={() => {
+                    if (remoteVideoRef.current) {
+                      console.log('🔍 Remote video element info:', {
+                        srcObject: !!remoteVideoRef.current.srcObject,
+                        readyState: remoteVideoRef.current.readyState,
+                        videoWidth: remoteVideoRef.current.videoWidth,
+                        videoHeight: remoteVideoRef.current.videoHeight,
+                        paused: remoteVideoRef.current.paused
+                      });
+                    }
+                    console.log('🔍 Peer connections:', Object.keys(peerConnections));
+                  }} className="test-button" style={{fontSize: '0.7rem', padding: '0.25rem 0.5rem'}}>
+                    🔍 Debug
+                  </button>
+                  <button onClick={() => {
+                    console.log('🔄 Retrying screen share connection...');
+                    if (activeScreenSharer && socket) {
+                      // Close existing connection
+                      const pc = peerConnections[activeScreenSharer.userId];
+                      if (pc) {
+                        pc.close();
+                        setPeerConnections(prev => {
+                          const newPeers = { ...prev };
+                          delete newPeers[activeScreenSharer.userId];
+                          return newPeers;
+                        });
+                      }
+                      // Retry connection
+                      setTimeout(() => {
+                        requestScreenShare(activeScreenSharer.userId, socket);
+                      }, 500);
+                    }
+                  }} className="test-button" style={{fontSize: '0.7rem', padding: '0.25rem 0.5rem', marginLeft: '0.5rem'}}>
+                    🔄 Retry
+                  </button>
+                </div>
               </div>
               <video 
                 ref={remoteVideoRef} 
                 autoPlay 
                 playsInline
+                muted={false}
                 controls={false}
                 className="screen-video"
+                style={{ backgroundColor: '#000' }}
                 onLoadedMetadata={(e) => {
                   console.log('📺 Video metadata loaded:', {
                     videoWidth: e.target.videoWidth,
                     videoHeight: e.target.videoHeight,
-                    duration: e.target.duration
+                    duration: e.target.duration,
+                    srcObject: !!e.target.srcObject
+                  });
+                  
+                  // Force play again just in case
+                  e.target.play().catch(err => {
+                    console.log('⚠️ Play prevented:', err.message);
                   });
                 }}
-                onCanPlay={() => console.log('📺 Video can play')}
+                onCanPlay={() => {
+                  console.log('📺 Video can play');
+                  if (remoteVideoRef.current) {
+                    remoteVideoRef.current.play().catch(console.log);
+                  }
+                }}
+                onPlaying={() => console.log('📺 Video is playing!')}
                 onError={(e) => console.error('❌ Video error:', e)}
+                onLoadStart={() => console.log('📺 Video load started')}
+                onLoadedData={() => console.log('📺 Video data loaded')}
               />
             </div>
           ) : (
